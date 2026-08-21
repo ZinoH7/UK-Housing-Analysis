@@ -1,0 +1,755 @@
+---
+title: "UK Housing Affordability and Regional Differences: An Analysis of Earnings, GDP per Head and Population"
+author: "Zino Harrison"
+date: "2026-06-29"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Introduction
+
+Housing affordability in the UK is highly discussed, particularly with regards to how much higher prices are in London and the South East in addition to the sharp increases in recent years. Whilst house prices have risen so have earnings, gdp and population, creating the opportunity to explore the relationship between these economic variables.
+
+This project investigates how house prices vary across UK regions in addition to how they have changed over time. It focuses on the relationship between Average House Price with Median Earnings and GDP per Head across 12 UK regions. It also briefly explores the relationship between changes in population and the increase in house prices. The analysis also aims to explore whether increase in house prices can be explained by these economic variables.
+
+Data sources from the Office for National Statistics were gathered, cleaned and merged. Then followed an Exploratory Data Analysis to investigate regional differences, changes over time and correlation between the variables. Finally a linear regression model was created and diagnostics used to assess its assumptions and reliability.
+
+\newpage
+
+# Data Cleaning and Merging
+
+```{r packages, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(stringr)
+library(ggplot2)
+library(knitr)
+library(patchwork)
+library(gridExtra)
+library(kableExtra)
+```
+
+```{r import, include = FALSE}
+earnings <- read.csv("data/median_earnings.csv")
+house_prices <- read.csv("data/house_prices.csv")
+gdp <- read.csv("data/gdp.csv")
+population <- read.csv("data/population.csv")
+```
+
+
+```{r median earnings, echo=FALSE}
+
+# remove first row and conf % columns
+
+earnings <- earnings[-1, ] %>%
+  select(Date, North.East, North.West, Yorkshire.and.The.Humber, 
+         East.Midlands, West.Midlands, East, London, South.East,
+         South.West, Wales, Scotland, Northern.Ireland)%>%
+  mutate(across(-Date, ~ as.numeric(gsub(",", "", .))))
+
+# standardise region names
+
+names(earnings) <- gsub("\\.", " ", names(earnings)) 
+
+# combine all regions into one column
+
+earnings <- earnings %>%
+  pivot_longer(
+    cols = -Date,        
+    names_to = "Region", 
+    values_to = "Median_Earnings"  
+  )%>%
+  mutate(Median_Earnings = as.numeric(gsub(",", "", Median_Earnings)))
+
+# rename Date to Year so it's consistent with the other data frames
+
+colnames(earnings)[1] <- "Year"
+```
+
+
+```{r mean house prices, echo=FALSE}
+
+# we only want date, region name and average price
+
+house_prices <- house_prices %>%
+  select(
+    Date, Region_Name, Average_Price
+  )
+
+house_prices <- house_prices[
+  house_prices$Region_Name %in% c(
+    "East Midlands", "London", "Northern Ireland", "Scotland", "South West",
+    "Wales", "West Midlands Region", "South East", "East of England",
+    "North East", "Yorkshire and The Humber",
+    "North West", "England"
+  ),
+]
+
+# ensure region names are consistent with other data frames
+
+house_prices$Region_Name <- gsub("West Midlands Region", "West Midlands", 
+                                 house_prices$Region_Name)
+
+house_prices$Region_Name <- gsub("East of England", "East", 
+                                 house_prices$Region_Name)
+
+# only show the year - not full date
+
+house_prices$Date <- dmy(house_prices$Date)
+house_prices$Year <- year(house_prices$Date)
+
+# data was recorded every month - take an average for the year
+
+house_prices <- house_prices %>%
+  group_by(Year, Region_Name) %>%
+  summarise(Average_Price = round(mean(Average_Price)), .groups = "drop")
+
+colnames(house_prices)[2] <- "Region"
+
+house_prices$Year <- as.integer(house_prices$Year)
+
+```
+
+### GDP per head
+
+```{r GDP per head, warning = FALSE, echo=FALSE}
+
+# remove the LA code and LA names columns
+# take an average across each region
+# choose median since mean would be unweighted - skewed by LA's like city of london
+
+gdp <- gdp[,-c(2,3)]%>%
+  pivot_longer(
+    cols = -ITL1.Region,
+    names_to = "Year",
+    values_to = "GDP_per_head"
+  ) %>%
+  mutate(
+    GDP_per_head = as.numeric(gsub(",", "", GDP_per_head))
+  ) %>%
+  group_by(ITL1.Region, Year) %>%
+  summarise(GDP_per_head = round(median(GDP_per_head)), .groups = "drop")
+
+# standardise so it matches previous data frames
+
+colnames(gdp)[1] <- "Region"
+
+gdp$Year <- gsub("X", " ", gdp$Year)
+
+gdp$Region <- str_trim(gdp$Region, side = "right")
+
+gdp$Year <- as.integer(gdp$Year)
+
+gdp %>%
+  filter(is.na(GDP_per_head))
+
+```
+
+Due to the structure of the dataset and our focus being on regions rather than local authorities and a lack of data on the population for each LA meaning I cannot calculate a weighted mean I chose to take the median. By doing so I have avoided certain Local Autorities with small populations but a significantly large GDP per head (such as the city of London) skewing the data.
+
+One missing value has been identified during the data cleaning (GDP per head, Northern Ireland 2023). This signals an absent value from the source data.
+
+
+```{r population, echo=FALSE}
+
+# remove first 6 rows since they contain irrelevant information
+# remove columns containing data on regions not relevant
+
+population <- population[-c(1,2,3,4,5,6), -c(3,5,6)]
+
+# rename columns so they match previous data frames
+
+colnames(population)[1] <- "Year"
+colnames(population)[2] <- "Scotland"
+colnames(population)[3] <- "England"
+colnames(population)[4] <- "Northern Ireland"
+colnames(population)[5] <- "Wales"
+
+# combine all regions into one column
+
+population <- population %>%
+  pivot_longer(
+    cols = -Year,
+    names_to = "Region",
+    values_to = "Population"
+  )
+
+population$Year <- as.integer(population$Year)
+
+```
+
+### Data Validation
+
+For each data set I checked region names to ensure the consistency prior to merging and checked year ranges to determine the range appropriate for the master data frame.
+
+The population data frame only covers the countries England, Scotland, Northern Ireland and Wales - it does not split England into its smaller regions unlike the other data sets. Due to the nature of GDP per head and median earnings we cannot calculate the average for England as a whole without knowledge of the populations of its smaller regions which we do not have the data for. As a result we will create two separate data frames for our analysis. The first will combine our earnings, house prices and gdp data frames (looking at regions) and the second will combine only the house prices and population data frames (looking at countries).
+
+The first data frame will range from the years 2002 to 2023 because this is the period the regional data sets have in common. The second data frame will range from 1971 to 2024 since this is the common period for the country data sets.
+
+## Creating the data frames for analysis
+
+```{r regional df, echo=FALSE}
+earnings_r <- earnings %>%
+  filter(Year >= 2002, Year <= 2023)
+
+house_prices_r <- house_prices %>%
+  filter(Year >= 2002, Year <= 2023)
+
+gdp_r <- gdp %>%
+  filter(Year >= 2002, Year <= 2023)
+
+# regional join - remove england
+
+earnings_r <- earnings_r %>%
+  filter(Region != "England")
+
+house_prices_r <- house_prices_r %>%
+  filter(Region != "England")
+
+regional <- earnings_r %>%
+  left_join(house_prices_r, by = c("Region", "Year")) %>%
+  left_join(gdp_r, by = c("Region", "Year"))
+```
+
+```{r country df, echo=FALSE}
+
+house_prices_c <- house_prices %>%
+  filter(Year >= 1971, Year <= 2024) %>%
+   filter(Region %in% c("Scotland", "England", "Northern Ireland", "Wales"))
+
+population_c <- population %>%
+  filter(Year >= 1971, Year <= 2024)
+
+countries <-house_prices_c %>%
+  left_join(population_c, by = c("Region", "Year"))
+
+countries$Population <- as.integer(countries$Population)
+```
+
+### Final checks
+
+```{r final checks, echo = FALSE, results = "hide"}
+dim(regional)
+dim(countries)
+
+colSums(is.na(regional))
+colSums(is.na(countries))
+
+```
+
+The final checks confirm that both data frames have the expected dimensions and contain no unexpected missing values (other than the previously found GDP per head for Northern Ireland - 2023)
+
+Dimensions Check\
+Regional: 12 regions over 22 years years gives (12 x 22) 264 observations\
+Country: 4 countries over 54 years gives (4 x 54) 216 observations
+
+NA check\
+Shows the only NA value is the previously identified (median LA) GDP per head for Northern Ireland 2023
+
+\newpage
+
+# Exploratory Data Analysis
+
+## Regional Dataset
+
+```{r regional - summary1, echo=FALSE, fig.width=5, fig.height=4}
+
+summary_region <- regional %>%
+  group_by(Region) %>%
+  summarise(
+    "Average House Price" = round(mean(Average_Price)),
+    "Median Earnings" = round(mean(Median_Earnings)),
+    "GDP per head" = round(mean(GDP_per_head, na.rm = TRUE)),
+  )
+
+kable(summary_region, 
+      caption = "Regional Summary Statistics (Means calculated across all observations)") %>% kable_styling(font_size = 8)
+```
+
+The Summary Statistics shows clear differences between the regions in the UK. We can see London has the greatest Average House Price and Median Earnings, followed by the South East. The average House Price in London is over £100,000 more than the average house price in the South East but the Median Earnings differ by only £3000. The region with the lowest Average House Price is the North East, less than a third of London's Average. It also has the lowest Median Earnings but across regions Median Earnings vary much less. The South East has the highest (median LA) GDP per head, followed by London and then the East. Meanwhile, Wales has the lowest (median LA) GDP per head, followed by Northern Ireland and the North East.
+
+```{r regional - summary2, echo=FALSE}
+summary_year <- regional %>%
+  group_by(Year) %>%
+  summarise(
+    "Average House Price" = round(mean(Average_Price)),
+    "Median Earnings" = round(mean(Median_Earnings)),
+    "GDP per head" = round(mean(GDP_per_head, na.rm = TRUE)),
+  )
+
+kable(summary_year, 
+      caption = "Yearly Summary Statistics (Means calculated across all observations)") %>%
+  kable_styling(font_size = 8) 
+ 
+
+```
+
+Note that an arithmetic mean was taken so the regions weren't weighted by population size so data from this table should be taken with caution.
+
+The Summary Statistics show Average House Prices increased up until 2007, then fell in 2008 and again in 2009 but then began to increase in 2010 again only to fall in 2011. But after 2011 Average House Price continued to rise reaching the 2007 level in 2014. Median Earnings on the other hand continued to rise much more steadily - increasing by £15,000 over the 22 years. Similarly (median LA) GDP per head increased steadily, increasing by around £15,000 too.
+
+```{r regional - summary 3, echo=FALSE}
+min_max_summary <- regional %>%
+  group_by(Year) %>%
+  summarise(
+    "Lowest house price" = Region[which.min(Average_Price)],
+    "Lowest earnings" = Region[which.min(Median_Earnings)],
+    "Lowest GDP per head" = Region[which.min(GDP_per_head)],
+    
+    "Highest house price" = Region[which.max(Average_Price)],
+    "Highest earnings" = Region[which.max(Median_Earnings)],
+    "Highest GDP per head" = Region[which.max(GDP_per_head)]
+  )
+
+kable(min_max_summary,
+      caption = 
+        "Table of regions with minimum and maximum house prices, earning and GDP per head"
+)%>%
+  column_spec(1, width = "1.0cm") %>%
+  column_spec(2:7, width = "2.3cm")  %>%
+  kable_styling(font_size = 8) 
+
+```
+
+The table shows from 2002 to 2010 the region with the lowest mean house price fluctuated between the North East and Scotland. During these years lowest median earnings were dominated by the North East again. However lowest (median LA) GDP per head was consistently Wales.
+
+Between 2011 and 2016 the region with the lowest mean house price was instead Northern Ireland. However it was only the region with the lowest median earnings for three of these years (2011, 2013 and 2014). Instead in 2012 and 2016 it was the North East again and in 2015 it was Yorkshire and the Humber. The region with the lowest (median LA) GDP per head alternated between Wales and Northern Ireland.
+
+From 2017 onwards the North East was once again the region with the lowest average house price and also the region with the lowest median earnings. Northern Ireland was the region with the lowest (median LA) GDP per head in 2018 but in all other years the region was again Wales.
+
+Across all years London was region with the highest average house price and median earnings. However in almost all years, with the exception of 2003, the South East had the highest (median LA) GDP per head. If instead GDP per head for the region was used a different result may have been found.
+
+
+
+```{r regional - comparisons 1, echo=FALSE, warning = FALSE}
+
+regional_housing <- regional[,-c(3,5)]
+
+ggplot(regional_housing, aes(x = Region, y = Average_Price / 1000 )) +
+  geom_boxplot() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Region Name", y = "Mean House Price (thousands) ",
+    title = "Comparison of House Prices across Regions"
+  ) 
+```
+
+The box plot shows London has the greatest range - suggesting it has experienced the greatest change in Average House price over the 22 years. All other ranges are notable smaller with the South East and East regions having similar ranges around half the size as London's. All other regions have much smaller ranges (the smallest being the North East's) suggesting little change in house prices over the years.
+
+```{r regional - comparisons 2, echo=FALSE, warning = FALSE, fig.width=5, fig.height=4}
+regional_earnings <- regional[,-c(4,5)]
+
+ggplot(regional_earnings, aes(x = Region, y = Median_Earnings / 1000)) +
+  geom_boxplot() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Region Name", y = "Median Earnings (thousands)",
+    title = "Comparison of Earnings across Regions"
+  ) 
+```
+
+Similarly this plot shows earnings in London are still higher than in all other regions but compared to average house prices the difference isn't as extreme. The South East follows close behind and the East is only a little bit lower. All regions have very similar sized ranges and interquartile ranges suggesting the regions all followed a similar pattern.
+
+```{r regional - comparisons 3, echo=FALSE, warning = FALSE, fig.width=5, fig.height=4}
+regional_gdp <- regional[,-c(3,4)]
+
+ggplot(regional_gdp, aes(x = Region, y = GDP_per_head / 1000)) +
+  geom_boxplot() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Region Name", y = "GDP per head (thousands)",
+    title = "Comparison of GDP per head across Regions"
+  ) 
+```
+
+Finally, this plot also shows a similar pattern across the regions to the previous boxplot, although compared with the other regionss London isn't as high. We can also see (median LA) GDP per head is typically lower than median earnings (which is especially the case for London), although they measure different aspects of economic activity so should not be directly compared. Once again all regions have similar sized ranges.
+
+```{r regional - trends, echo=FALSE}
+options(scipen = 999)
+
+regional_long <- regional %>%
+  pivot_longer(
+    cols = c(Median_Earnings, Average_Price, GDP_per_head),
+    names_to = "Indicator",
+    values_to = "Value"
+  )
+
+regional_london <- regional_long %>%
+  filter(Region == "London")
+
+london_plot <- ggplot(regional_london, aes(x = Year, y = Value, colour = Indicator)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Year", y = "Value",
+    colour = "Indicator",
+    title = "London"
+  ) +
+  theme_minimal()
+
+
+regional_NE <- regional_long %>%
+  filter(Region == "North East")
+
+NE_plot <- ggplot(regional_NE, aes(x = Year, y = Value, colour = Indicator)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Year", y = "Value",
+    colour = "Indicator",
+    title = "North East"
+  ) +
+  theme_minimal()
+
+london_plot + NE_plot + plot_layout(guides = "collect") + plot_annotation(
+    title = "Earnings, House Prices & GDP per Head over Time")  &
+  theme(legend.position = "bottom")
+```
+The London Time Series was chosen because it is the region with the highest Average House Price, Median Earnings and second highest GDP per head. Median earnings and GDP per head lie very close together, both showing steady growth and GDP per head always lying slightly below median earnings. Due to the scale it is somewhat difficult to spot but we can see a slight dip in GDP per head in 2009 and 2020. In the contrast, Average House Prices fluctuated significantly in 2008 then rising rapidly from 2010 to then dip again in 2019. However despite the fluctuation Average House Price showed the greatest increase over the 22 years.
+
+On the other hand, the North East was chosen to contrast London as table 3 shows since 2018 the North East has been the region with the lowest average house price and median earnings. Similarly to London GDP per head lies close to median earnings and median earnings lie above GDP per capita. We can also see median earnings and GDP per capita follow a similar stable growth pattern, although GDP per capita does slightly dip in 2020. This growth trend is similar to London's median earnings pattern. Although house prices remain much lower than those in London, we can observe similar dips and spikes. In both regions house prices are recorded to have fallen in 2009 and from 2020 (2019 in the case of London) house prices grew significantly.
+
+\newpage
+
+### Correlation analysis 
+
+```{r correlation, echo=FALSE}
+
+# Correlation matrix
+# Only want year, eanings and gp
+
+cor_df <- regional[c("Year", "Median_Earnings", "GDP_per_head")]
+
+cor_matrix <- round(cor(cor_df, use = "pairwise.complete.obs", method = "pearson"), 2)
+
+kable(cor_matrix, caption = "Correlation matrix: Median Earnings, GDP per head and Year")
+```
+
+In previous time series plots we observed an upward trend in both GDP per head and Median Earnings - suggesting a positive association between GDP per head and Year, in addition to a positive association between Median Earnings and Year. The correlation matrix reinforces this, the correlation between GDP per head and Year was calculated to be 0.8 and between Median Earnings and Year it was 0.8. This suggests a very strong correlation between the variables. Additionally the calculated correlation between GDP per capita and Median Earnings was even higher at 0.93. This suggests the variables are all strongly correlated to each other.
+
+## Country Dataset
+
+### Summary Statistics
+
+```{r country - summary 1, echo=FALSE}
+
+summary_country <- countries %>%
+  group_by(Region) %>%
+  summarise(
+    "Average House Price" = round(mean(Average_Price)),
+    "Population" = round(mean(Population))
+  )
+
+kable(summary_country, 
+      caption = "Summary Statistics for each country (Means calculated across all observations)")
+
+```
+
+The Summary Statistics show that mean house price calculated across all years for Northern Ireland, Scotland and Wales are all similar lying around £70,000, with Scotland having the lowest, followed by Northern Ireland and then Wales. However the average in England was around £30,000 higher than in the other regions (over £103,000). The average population size varied across the regions. Northern Ireland had the lowest population, followed by Wales and then Scotland - a different order than the order of mean house prices. However similarly to England having much higher house prices on average, England also has a significantly greater population size. This raises the question whether the higher prices in England may be caused by the larger population creating greater demand - which we will investigate later.
+
+Note that the averages were taken over a large time period ranging from 1971 to 2024 so they do not accurately reflect recent house prices which have already been shown to have grown significantly just over the years just since the early 2000s.
+
+\newpage
+
+```{r country - summary 2, echo=FALSE}
+summary_year <- countries %>%
+  group_by(Year) %>%
+  summarise(
+     "Average_House_Price" = round(mean(Average_Price)),
+    "Population" = round(mean(Population))
+  )
+
+# choose 1971 as the base year
+
+house_base <- summary_year$Average_House_Price[which.min(summary_year$Year)]
+pop_base <- summary_year$Population[which.min(summary_year$Year)]
+
+summary_year$house_index <- round(summary_year$Average_House_Price / house_base, 2)
+summary_year$population_index <- round(summary_year$Population / pop_base, 2)
+
+kable(summary_year, 
+      caption = "Yearly Summary Statistics (Means calculated across all observations)")
+
+```
+
+With so much data spanning from the years 1971 to 2024 it is difficult to make conclusions from the summary statistics and no visualisations. However it is important to note that the Average House Price calculated across the regions is not a weighted average and as previously noted England's population dominates whilst also having much higher average house prices than the other regions. As a result these figures do not reflect the full extent of how high house prices have grown. In 2024 the average house was 56 times the price of the average house in 1971, whilst the population was less than 1.3 times the size. This suggests that population growth alone is not sufficient to explain the scale of the incerase in house prices in the UK.
+
+```{r country - trends, echo=FALSE, fig.width=5, fig.height=4}
+
+options(scipen = 999)
+
+country_housing <- countries[,-c(4)]
+
+ggplot(country_housing, aes(x = Year, y = Average_Price, colour = Region)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Year", y = "Average Price",
+    colour = "Country",
+    title = "House Prices over Time"
+  ) +
+  theme_minimal()
+
+```
+
+Initially in 1971, house across the four countries are around the same price. Across all four countries, prices grow steadily, with the average price being highest in Northern Ireland in 1980. They continue to grow and around 1985 England takes the lead with the highest average house price. Shortly after there is a sudden sharp increase in both England and Wales, however they do begin to fall slightly from 1989 but then begin to rise again in 1996. From this point house prices begin to rise sharply across all four countries, especially from 2000 up until 2007. House prices rise sharply in the mid 2000s across all four countries but Northern Ireland experiences the greatest increase - with the average house price overtaking England's and rising above £200,000. After 2007 there is a sharp dip in the average house price with the sharpest drop being in Northern Ireland. After 3 years in England, Scotland and Wales the average house price increases but then falls again the following year - in Northern Ireland however prices continue to fall and now the average house price in Northern Ireland is the lowest out of the four countries. However in the early 2010s the average house price begins to increase again, first in England. They continue to increase rapidly until 2021 when they begin to plateau.
+
+\newpage
+
+# Price-to-Earnings ratio
+
+```{r affordability, echo=FALSE}
+# house price divided by earnings
+
+regional$Affordability <- round(regional$Average_Price / regional$Median_Earnings, 2)
+
+ggplot(regional, aes(x = Year, y = Affordability, colour = Region)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Year", y = "Average House Price / Median Earnings",
+    colour = "Region",
+    title = "Price-to-Earnings over Time (2002 - 2023)"
+  ) +
+  theme_minimal()
+
+ggplot(regional, aes(x = Year, y = Affordability)) +
+  labs(y = "Price-to-Earnings Ratio") +
+  geom_line(colour = "steelblue") +
+  facet_wrap(~Region, ncol = 4) +
+  theme_minimal()
+
+
+
+```
+
+From 2002 to 2023, London remained the region with the greatest price-to-earnings ratio and after 2010 it grew steeply. In 2016 the ratio peaked at just below 15 but fell until it increased again in 2021 and 2022, only to fall again in 2023 to around 13. The East and South East regions' price-to-earnings ratio also increased gradually suggesting housing in these regions also became less affordable, although not to the same extent as London. The ratio remained relatively stable in most other regions, such as Scotland, Wales and the North East. Around 2008 Northern Ireland showed a unique sharp spike, increasing dramatically two years prior then falling just as dramatically two years after - reflecting the housing bubble bursting in 2008. In all regions the price-to-earnings ratio increased in the years leading up to 2008, but none as fast as Northern Ireland, and all others dipped slightly after and most remained stable able at a ratio between 5 and 7.5. In 2023 almost all regions had a price-to-earnings ratio between 7.5 and 5, with the expections of London, the North East (ever so slightly below 5), the South East (just above 10), the East and South West (both around 2 points lower than the South East).
+
+\newpage
+
+# Linear Regression Model
+
+```{r regression, echo= FALSE}
+
+# dependent variable - average house price
+
+# to make coefficients easier to interpret scale by 1000
+
+regional_scaled <- regional
+
+regional_scaled$Median_Earnings <- regional_scaled$Median_Earnings / 1000
+regional_scaled$Average_Price <- regional_scaled$Average_Price / 1000
+regional_scaled$GDP_per_head <- regional_scaled$GDP_per_head / 1000
+
+model <- lm(Average_Price ~ Median_Earnings + GDP_per_head + Year + Region, data = regional_scaled)
+
+```
+
+$$
+\text{Average House Price} = \beta_0 + \beta_1(\text{Median Earnings}) + \beta_2(\text{GDP per head}) +
+ \beta_3(\text{Year}) + \beta_4(\text{Region}) + \varepsilon
+$$
+
+```{r, echo=FALSE}
+
+model_summary <- summary(model)
+
+# table of coefficients
+coefficients <- model_summary$coefficients
+
+kable(coefficients, caption = "Regression Coefficients")
+
+```
+
+#### Estimated coefficients 
+
+Recall, Median Earnings, GDP per head and Average House Prices are measured in thousands. For every £1000 increase in median earnings, average house price is estimated to increase by approximately £10,963, holding all other variable constant. Similarly for every £1000 increase in GDP per head, average house price is estimated to increase by £6286, holding all other variable constant. However for each year that passes house prices are estimated to decrease by £3,558, holding all other variable constant. This seems a bit strange and suggests potential multicollinearity in the data.
+
+#### Checking for multicollinearity
+
+
+$$
+\text{VIF}_i = 1/(1-(R_i)^2)
+$$
+
+```{r VIF, echo=FALSE}
+VIF_earnings <- 1/(1-summary(
+  lm(Median_Earnings ~ GDP_per_head + Year + Region, data = regional_scaled)
+)$r.squared)
+
+VIF_GDP <- 1/(1-summary(
+  lm(GDP_per_head ~ Median_Earnings + Year + Region, data = regional_scaled)
+)$r.squared)
+
+VIF_Year <- 1/(1-summary(
+  lm(Year ~ GDP_per_head + Median_Earnings + Region, data = regional_scaled)
+)$r.squared)
+
+VIF_df = data.frame(Variable = c("Earnings", "GDP per head", "year"), VIF = c(VIF_earnings, VIF_GDP, VIF_Year))
+
+kable(VIF_df, caption = "Variance Inflation Factor (VIF)")
+```
+
+The VIF values are incredibly high, suggesting substantial multicollinearity among these three variables, perhaps due to all three exhibiting strong upward trends over the years. Therefore the individual coefficients should be interpreted with caution. However this does not mean the model cannot predict well, it simply makes the coefficients more difficult to interpret. Therefore the negative coefficient for Year should not be interpreted as house prices falling every year.
+
+#### P values 
+
+Median Earnings had a p value of 0.000099 which is very strong evidence of an association. Additionally GDP per head has a p value of 0.00199 which is also strong evidence of an association. Meanwhile Year has a p value of 0.0276 which is statistically significant at the 0.05 level.There is much variation between regions however. Some regions, such as Scotland and London, have incredibly small p values which is strong evidence that house prices in that region differ from the average in the reference region. On the other hand some regions, such as the South East and Wales have incredibly high p values so there is not enough evidence to suggest house prices in these regions are significantly different from the reference region.
+
+If we use an alpha level of 0.05 to determine which variables are statistically significant then the only variables which are not are the West Midlands, Wales, South East, Northern Ireland and East Midlands. All other variables are then determined to be statistically significant.
+
+Note that a small p value only suggests an association but doesn't imply the effect of that variable on Average House Prices is high.
+
+
+### Assessing Model Fit
+
+```{r Model Fit, echo=FALSE}
+# model fit
+fit_summary <- summary(model)
+
+rse <-fit_summary$sigma
+r2 <- fit_summary$r.squared
+adj_r2 <- fit_summary$adj.r.squared
+f_stat <- fit_summary$fstatistic[1]
+
+p_value <-  pf(f_stat, fit_summary$fstatistic[2], fit_summary$fstatistic[3], 
+               lower.tail = FALSE)
+
+model_fit <- data.frame("Residual standard error" = rse, 
+                        "Multiple R squared" = r2, "Adjusted R squared" = adj_r2, 
+                        "F statistic" = f_stat, "P value" = p_value)
+
+kable(model_fit, caption = "Values", digits = 3)
+```
+
+The residual standard error was approximately 31.5, meaning on average the observed values fall £31,500 from the regression line. The coefficient of determination was 0.889 which means that 88.9% of variation was explained by the predictor variables (Median Earnings, GDP per head, Year and Region). The adjusted R squared value is only slightly lower at 0.882, suggesting the predictor strength is not significantly reduced after accounting for the number of predictors. The F statistic of 141.5 is highly significant with a p value of p<0.001 indicating the regression model provides a better fit for the data than a model containing no independent variables.
+
+## Visualising the model
+
+```{r model visualisation, echo=FALSE, fig.width=4, fig.height=3}
+# remove missing value
+model_data <- regional_scaled %>%
+  filter(!is.na(GDP_per_head))
+
+ggplot(model_data, aes(x=predict(model), y=Average_Price)) +
+  geom_point(size = 2, alpha = 0.5) +
+  geom_abline(intercept=0, slope=1, linetype = "dashed", colour = "red") +
+  labs(x="Predicted Values (thousands)", y="Actual Values (thousands)", title="Predicted vs Actual House Price") +
+  theme_minimal()
+```
+The dashed red line represents points where the predicted value equals the actual value - the model has perfectly predicted average house price. Most values lie near this line, as can be seen by the tight clustering in the bottom left, indicating the model performs well. However as the actual values increase, past around £250,000, the model becomes less reliable as residuals begin to increase. The difference between actual values and predicted values grows larger as the values increase. Above actual values of £400,000 the model under predicts average house house.
+
+## Diagnostic Plots
+
+```{r Diagnostic plots, echo=FALSE, warning=FALSE, message=FALSE}
+
+RvF_plot <- ggplot(model, aes(.fitted, .resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residuals vs Fitted", x = "Fitted Values", y = "Residuals") +
+  theme_minimal()
+
+QQ_plot <- ggplot(model, aes(sample = .stdresid)) +
+  stat_qq(alpha = 0.7) +
+  stat_qq_line(colour = "red", linetype = "dashed") +
+  labs(title = "Q-Q Residuals", x = "Theoretical Quantiles", 
+       y = "Standardised Residuals") +
+  theme_minimal()
+
+SL_plot <- ggplot(model, aes(.fitted, sqrt(abs(.stdresid)))) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(se = FALSE, method = "loess", color = "red", linetype = "dashed") +
+  labs(title = "Scale-Location", x = "Fitted Values", 
+       y = "√|Standardized Residuals|") +
+  theme_minimal()
+
+RvL_plot <- ggplot(model, aes(.hat, .stdresid)) +
+  geom_point(alpha = 0.7, aes(colour = .cooksd)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residuals vs Leverage", x = "Leverage", 
+       y = "Standardised Residuals") +
+  theme_minimal()
+
+
+grid.arrange(RvF_plot, QQ_plot, SL_plot, RvL_plot, ncol = 2)
+
+
+```
+
+#### Residuals vs Fitted plot
+- The residuals are scattered around 0 but follow a slight pattern - the points form an almost u-shape up until fitted values of 300.
+- Additionally there is a wider spread at larger values.
+- These patterns may indicate non-linearity in the data that the model has failed to capture
+
+#### Normal Q-Q Plot
+- Between the theoretical quantities of -1.5 and 1.5 the points fall approximately along a straight line - suggesting the residual are normally distributed.
+- However outside of this range the points deviate indicating potential skewness or outliers.
+
+#### Scale-Location (Spread-Location) Plot
+- The red trend line slopes upward suggesting increasing spread (as earlier observed)
+- This indicates heteroscedasticity (the variability of the residuals changes with the level of the predictor values)
+
+#### Residuals vs Leverage Plot
+- Most points cluster near low leverage (lower leverage points have less influence on the model)
+- Lighter points have a higher Cooks distance so may be potentially influential observations
+- However the greatest cooks distance is 0.08, suggesting very little influence
+
+\newpage
+
+# Key Findings
+
+## Regional Differences
+London was found to have significantly higher average house prices than all other regions but the South East, South West and the East also stood out, having higher house prices than the other regions. Most other regions had similar lower house prices, although the North East stood out as often having the lowest across the years. A similar pattern was observed with earnings, although the variation between regions outside of London was smaller.However the comparison of median Local Authority's GDP per head of each Region the pattern was quite different. Rather than London, the region with the  highest median GDP per head was found to be the South East. When comparing countries rather regions, house prices in England were found to have grown most rapidly, although Northern Ireland experienced the sharpest fall after 2007.
+
+## Trends over time
+Earnings, GDP per head and Population have all grew steadily over time. Meanwhile, house prices were far more volatile - growing at a much faster rate and also experiencing sharp falls and rises some years.
+
+## Affordability 
+The price-to-earnings ratio has grew the most and rose most sharply in London, indicating it has experienced the greatest unaffordability of housing. Following London, the South East, South West and the East experienced the highest increases in the price-to-earnings ratio. Interestingly these are the regions which most often have the highest median earnings/GDP per capita (median Local Authority).
+
+## Population and Housing
+Compared data from 1971 and 2023 showed the average house price increased over 56 times whilst population grew 1.24 times. This suggested the increase in house prices could not be explained only by population.
+
+## Linear Regression Model
+The increase in housing could largely be explained by Earnings, GDP per Head and Year in the model. However due to multicollinearity the individual coefficients need to be interpreted with caution
+
+\newpage
+
+# Limitations
+
+## GDP per Head
+- The GDP dataset was organised by Local Authority rather than Region. Initially I took the mean but due to some Local Autorities in London having a significantly higher GDP per head (e.g. the City of London) it positively skewed London's GDP per head.
+- Ideally the population weighted mean would have been taken but I lacked information on the Local Authority populations so instead the median was taken.
+
+## Population
+- Population data was only available at the country level.
+- As a result a separate data frame comparing average house price with population across the four UK countries was made.
+- This meant comparisons could not be made between changes in population and changes in median earnings and GDP per head.
+- It also meant population was not included in the linear regression model.
+- Additionally due to a lack of population data for Local Authorities and Regions weighted means could not be calculated where appropriate
+
+## Data periods
+- All datasets covered different periods, since the Earnings data started from 2002 most of the EDA and the linear regression model was limited from 2002 onwards although the Housing data began much earlier in 1968.
+
+## Observational analysis
+- The analysis is limited to association rather than causation
+
+## Linear Regression Model
+- Very strong multicollinearity means the individual coefficients must be interpreted with extreme caution
+- The diagnostic plots indicated heteroscedasticity
+
+# Conclusion
+
+This analysis primarily investigated the regional differences in house prices, earnings and GDP per head and explored the relationships between the three variables from 2002 to 2023. London consistently had the greatest average house price and median earnings. The South East, South West and the East also consistently had higher house prices and earnings than other regions. Meanwhile the North East and Northern Ireland consistently had the lowest house prices. Population was found to have grown at a much slower rate than house prices so it was determined population alone could not explain the increase in house prices. Additionally, house prices were found to have grown much faster than median earnings and GDP per Head. This was reinforced by the price-to-earnings ratio calculated which showed that whilst all regions have become less affordable, London's price-to-earnings ratio grew most significantly and has been most volatile. The South East, South West and the East again formed their own group where their ratios grew much more than the other regions but remained much lower than London's. Finally the linear regression model explained 88.9% of the variation in house prices, suggesting earnings, GDP per head and Year were strongly associated with house prices in the dataset, although there was also very strong multicollinearity between the variables.
+
+\newpage
+
+# References
+
+[HM Land Registry (2026). UK House Price Index: data downloads January 2026. [online] GOV.UK. Available at: https://www.gov.uk/government/statistical-data-sets/uk-house-price-index-data-downloads-january-2026 [Accessed 12 Aug. 2026].](https://www.gov.uk/government/statistical-data-sets/uk-house-price-index-data-downloads-january-2026)
+
+[Dur.ac.uk. (2024). Nomis - Official Census and Labour Market Statistics - Nomis - Official Census and Labour Market Statistics. [online] Available at: https://nmweb.dur.ac.uk/query/construct/summary.asp?mode=construct&version=0&dataset=30 [Accessed 12 Aug. 2026].](https://nmweb.dur.ac.uk/query/construct/summary.asp?mode=construct&version=0&dataset=30)
+
+[Ons.gov.uk. (2025). Regional gross domestic product: local authorities. [online] Available at: https://www.ons.gov.uk/economy/grossdomesticproductgdp/datasets/regionalgrossdomesticproductlocalauthorities? [Accessed 12 Aug. 2026].](https://www.ons.gov.uk/economy/grossdomesticproductgdp/datasets/regionalgrossdomesticproductlocalauthorities?)
+
+[Population estimates time series dataset - Office for National Statistics. (n.d.). [online] www.ons.gov.uk. Available at: https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/populationestimatestimeseriesdataset [Accessed 12 Aug. 2026].](https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/populationestimatestimeseriesdataset)
+
+
