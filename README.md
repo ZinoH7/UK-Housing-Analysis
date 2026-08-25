@@ -23,7 +23,15 @@ The project follows these stages:
 8. Regression diagnostics
 
 ## Exploratory Data Analysis (EDA)
-The EDA is split into two parts. The first part is a regional exploration of average house prices, median earnings and median local authority GDP per head from 2002 to 2023. The second part is an exploration of average house price and population across England (as a whole rather than the individual regions), Scotland, Wales and Northern Ireland from 1971 to 2024. Both parts consist of summary statistics, data visualisations (e.g. box plots) and time-series analysis.
+The EDA is split into two parts. The first part examines average house prices, median earnings and median local authority GDP per head across 12 UK regions from 2002 to 2023. The second examines average house price and population across England, Scotland, Wales and Northern Ireland from 1971 to 2024. 
+
+Both analyses use summary statistics, data visualisations and time-series analysis to investigate regional differences and changes over time.
+
+## Report
+- `Housing_analysis.Rmd` – R Markdown source code
+- `Housing_analysis.pdf` – knitted PDF report
+
+The report consists of the full analysis: results, discussion, key findings, limitations and conclusion.
 
 ## Repository Structure
 
