@@ -29,7 +29,7 @@ Both analyses use summary statistics, data visualisations and time-series analys
 
 ## Report
 - `Housing_analysis.Rmd` – R Markdown source code
-- `[Housing_analysis.pdf](Housing_analysis.pdf)` – full analysis report – knitted PDF report
+- [Housing_analysis.pdf](Housing_analysis.pdf) – full analysis report – knitted PDF report
 
 The report consists of the full analysis: results, discussion, key findings, limitations and conclusion.
 
