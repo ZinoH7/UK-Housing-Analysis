@@ -36,11 +36,16 @@ The report consists of the full analysis: results, discussion, key findings, lim
 ## Repository Structure
 
 ```text
-├── README.md
-├── analysis.Rmd
-└── data/
-    ├── median_earnings.csv
-    ├── house_prices.csv
-    ├── gdp.csv
-    └── population.csv
+summer-python-project/
+|
+|--- data/
+|   |--- gdp.csv
+|   |--- house_prices.csv
+|   |--- median_earnings.csv
+|   |--- population.csv
+|
+|--- .gitignore
+|--- Housing_analysis.Rmd
+|--- Housing_analysis.pdf
+|--- README.md
 ```
